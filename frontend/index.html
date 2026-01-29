@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>PDF ➜ Markdown 转换器</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="container">
+    <section class="left card">
+      <h2 class="title" style="margin:0 0 8px 0;">PDF ➜ Markdown 转换器</h2>
+      <div id="drop" class="dropzone" tabindex="0">将 PDF 拖拽到此处，或点击选择文件</div>
+      <div id="filename" class="filename" style="margin-top:6px;">未选择文件</div>
+      <input type="file" id="fileInput" accept="application/pdf" style="display:none" />
+      
+      <!-- 引擎选择 -->
+      <div style="margin-top:12px; padding:8px; background:#f5f5f5; border-radius:4px;">
+        <label style="font-weight:bold; display:block; margin-bottom:4px;">转换引擎：</label>
+        <label style="display:inline-block; margin-right:16px; cursor:pointer;">
+          <input type="radio" name="engine" value="default" checked> 
+          <span>默认引擎（快速）</span>
+        </label>
+        <label style="display:inline-block; cursor:pointer;">
+          <input type="radio" name="engine" value="nougat"> 
+          <span>Nougat（学术论文推荐⭐）</span>
+        </label>
+        <div style="font-size:12px; color:#666; margin-top:4px;">
+          💡 Nougat 专为学术论文优化，完美处理双栏布局和数学公式
+        </div>
+      </div>
+      
+      <div class="row btn-row" style="margin-top:8px;">
+        <button id="chooseBtn" class="btn">选择文件</button>
+        <button id="convertBtn" class="btn" disabled>转换</button>
+      </div>
+      <div id="progress" class="progress" aria-label="转换进度" style="display:none; margin-top:8px;">
+        <div class="bar" id="progressBar" style="width:0%"></div>
+      </div>
+    </section>
+
+    <section class="right card" style="min-height:420px;">
+      <div id="mdRaw" class="markdown" style="min-height:200px;"></div>
+      <div id="mdPreview" class="markdown-preview" style="min-height:200px; margin-top:8px;"></div>
+      <div id="summary" class="summary" style="margin-top:12px;"></div>
+      <div id="footer" class="footer-note" style="text-align:center; color:#666; margin-top:6px;">
+        如果时间留不住，就把思念run到无错处
+      </div>
+      <div style="margin-top:8px;">
+        <button id="copyBtn" class="btn" disabled>复制输出</button>
+        <button id="downloadBtn" class="btn" disabled>下载.md</button>
+      </div>
+    </section>
+  </div>
+
+  <script>
+  // 简易 Markdown -> HTML 转换（极简实现，用于预览）
+  function mdToHtml(md){
+    if (!md) return '';
+    let html = '';
+    html += md.split('\n').map(line => {
+      if (line.startsWith('## ')) return '<h2>' + line.substring(3) + '</h2>';
+      if (line.startsWith('# ')) return '<h1>' + line.substring(2) + '</h1>';
+      if (line.trim().length === 0) return '';
+      return '<p>' + line + '</p>';
+    }).join('');
+    return html;
+  }
+
+  const drop = document.getElementById('drop');
+  const fileInput = document.getElementById('fileInput');
+  const chooseBtn = document.getElementById('chooseBtn');
+  const convertBtn = document.getElementById('convertBtn');
+  const mdArea = document.getElementById('mdRaw');
+  const mdPreview = document.getElementById('mdPreview');
+  const summaryDiv = document.getElementById('summary');
+  const copyBtn = document.getElementById('copyBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const filenameEl = document.getElementById('filename');
+  const progress = document.getElementById('progress');
+  const progressBar = document.getElementById('progressBar');
+  let selectedFile = null;
+  let markdownText = '';
+
+  function showFilename(name){ filenameEl.textContent = name ? `已选择: ${name}` : '未选择文件'; }
+
+  function startProgress(){ progress.style.display = 'block'; progressBar.style.width = '0%'; let w = 0; const t = setInterval(()=>{ w += Math.random() * 8 + 2; if (w > 95) w = 95; progressBar.style.width = w.toFixed(0) + '%'; }, 200); return t; }
+  function stopProgress(timer){ if (timer) clearInterval(timer); progressBar.style.width = '100%'; setTimeout(()=>{ progress.style.display = 'none'; progressBar.style.width = '0%'; }, 300); }
+
+  drop.addEventListener('dragover', (e)=> { e.preventDefault(); drop.style.borderColor = '#555'; });
+  drop.addEventListener('dragleave', ()=> { drop.style.borderColor = '#bbb'; });
+  drop.addEventListener('drop', async (e)=> {
+    e.preventDefault(); drop.style.borderColor = '#bbb';
+    const f = e.dataTransfer.files[0];
+    if (f && f.type === 'application/pdf') {
+      selectedFile = f;
+      showFilename(f.name);
+      convertBtn.disabled = false;
+      mdArea.innerHTML = '';
+      mdPreview.innerHTML = '';
+      summaryDiv.innerHTML = '';
+    } else {
+      showFilename(null);
+      alert('请上传 PDF 文件');
+    }
+  });
+
+  drop.addEventListener('click', () => fileInput.click());
+  chooseBtn.addEventListener('click', ()=> fileInput.click());
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length > 0) {
+      selectedFile = fileInput.files[0];
+      showFilename(selectedFile.name);
+      convertBtn.disabled = false;
+      mdArea.innerHTML = '';
+      mdPreview.innerHTML = '';
+      summaryDiv.innerHTML = '';
+    }
+  });
+
+  convertBtn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+    convertBtn.disabled = true;
+    
+    // 获取选择的引擎
+    const engine = document.querySelector('input[name="engine"]:checked').value;
+    const endpoint = engine === 'nougat' ? '/convert-nougat' : '/convert';
+    
+    mdArea.textContent = engine === 'nougat' 
+      ? '正在使用 Nougat 转换（首次运行可能需要下载模型）...' 
+      : '正在转换，请稍等...';
+    
+    const timer = startProgress();
+    const form = new FormData();
+    form.append('file', selectedFile);
+
+    try {
+      const res = await fetch(endpoint, { method: 'POST', body: form });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: '未知错误' }));
+        mdArea.textContent = '错误: ' + (errData.error || '转换失败');
+        if (errData.install_guide) {
+          mdArea.textContent += '\n\n' + errData.install_guide;
+        }
+        mdPreview.innerHTML = '';
+        summaryDiv.innerHTML = '';
+      } else {
+        const data = await res.json();
+        const md = data.markdown || '';
+        markdownText = md;
+        
+        // 显示使用的方法
+        if (data.method === 'nougat') {
+          mdArea.textContent = `[使用 Nougat 引擎转换]\n\n${md}`;
+        } else {
+          mdArea.textContent = md;
+        }
+        
+        if (md && md.length > 0) {
+          mdPreview.innerHTML = mdToHtml(md);
+        } else {
+          mdArea.textContent = '';
+          mdPreview.innerHTML = '';
+        }
+        
+        // 摘要
+        summaryDiv.innerHTML = '';
+        const pages = data.pages || [];
+        
+        if (data.method === 'nougat') {
+          // Nougat 简化显示
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML = `<strong>✓ Nougat 转换完成</strong><br/>文本长度: ${md.length} 字符`;
+          summaryDiv.appendChild(card);
+        } else {
+          // 原有的详细显示
+          pages.forEach(p => {
+            const card = document.createElement('div');
+            card.className = 'card';
+            let html = `<strong>第 ${p.page} 页</strong> — 文本长度 ${p.text_len || 0}，表格 ${p.table_count || 0}<br/>`;
+            if (p.table_details && p.table_details.length) {
+              html += '<ul>';
+              p.table_details.forEach(td => {
+                html += `<li>${td.rows} 行 × ${td.cols} 列</li>`;
+              });
+              html += '</ul>';
+            }
+            if (p.images && p.images.length) {
+              html += '<div class="image-row">';
+              p.images.forEach(src => {
+                html += `<img src="${src}" style="height:60px; margin-right:6px; display:inline-block;" />`;
+              });
+              html += '</div>';
+            }
+            card.innerHTML = html;
+            summaryDiv.appendChild(card);
+          });
+        }
+        
+        copyBtn.disabled = false;
+        downloadBtn.disabled = false;
+      }
+    } catch (err) {
+      mdArea.textContent = '网络或服务器错误: ' + err.message;
+      mdPreview.innerHTML = '';
+      summaryDiv.innerHTML = '';
+    } finally {
+      stopProgress(timer);
+      convertBtn.disabled = false;
+      copyBtn.disabled = false;
+      downloadBtn.disabled = false;
+    }
+  });
+
+  copyBtn.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(markdownText); alert('已复制到剪贴板'); } catch { }
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    const blob = new Blob([markdownText], {type: 'text/markdown'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'output.md';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+</script>
+</body>
+</html>
